@@ -14,7 +14,6 @@ TT-ранги: (r_0, r_1, ..., r_d) = (1, r_1, ..., r_{d-1}, 1).
 
 from __future__ import annotations
 
-import random
 from core.dense_tensor import DenseTensor
 from core.utils import validate_shape, compute_size
 
@@ -43,13 +42,31 @@ class TTTensor:
         Args:
             cores: список DenseTensor, каждый с shape (r_k, n_k, r_{k+1})
         """
-        self.cores = cores
+        if not cores:
+            raise ValueError("Список ядер не может быть пустым")
+
+        self.cores = [c.copy() for c in cores]
         self.order = len(cores)
-        self.shape = tuple(core.shape[1] for core in cores)
-        r = [cores[0].shape[0]]
-        for core in cores:
-            r.append(core.shape[2])
-        self.ranks = tuple(r)
+
+        shapes = [c.shape for c in cores]
+        for idx, sh in enumerate(shapes):
+            if len(sh) != 3:
+                raise ValueError(f"Ядро {idx} должно быть трехмерным, получено shape={sh}")
+
+        for idx in range(self.order - 1):
+            if shapes[idx][2] != shapes[idx + 1][0]:
+                raise ValueError(
+                    f"Ранги ядер {idx} и {idx + 1} не согласованы: {shapes[idx][2]} != {shapes[idx + 1][0]}")
+
+        if shapes[0][0] != 1 or shapes[-1][2] != 1:
+            raise ValueError(f"Граничные ранги должны быть равны 1: r_0={shapes[0][0]}, r_d={shapes[-1][2]}")
+
+        self.shape = tuple(sh[1] for sh in shapes)
+
+        ranks_list = [shapes[0][0]]
+        for sh in shapes:
+            ranks_list.append(sh[2])
+        self.ranks = tuple(ranks_list)
 
     @staticmethod
     def random(shape, ranks, seed=None):
@@ -64,9 +81,11 @@ class TTTensor:
 
         NB: это отладочная функция, она не проверяется тестами
         """
-        if seed is not None:
-            random.seed(seed)
-        d = len(shape)
+        import random
+        rng = random.Random(seed)
+        v_shape = validate_shape(shape)
+        d = len(v_shape)
+
         if len(ranks) == d - 1:
             full_ranks = [1] + list(ranks) + [1]
         else:
@@ -75,12 +94,13 @@ class TTTensor:
         cores = []
         for k in range(d):
             r_left = full_ranks[k]
-            n_k = shape[k]
+            n_k = v_shape[k]
             r_right = full_ranks[k + 1]
-            core_shape = (r_left, n_k, r_right)
-            total_elements = r_left * n_k * r_right
-            data = [random.gauss(0.0, 1.0) for _ in range(total_elements)]
-            cores.append(DenseTensor(data, core_shape))
+            c_shape = (r_left, n_k, r_right)
+            c_size = r_left * n_k * r_right
+            c_data = [rng.uniform(-1.0, 1.0) for _ in range(c_size)]
+            cores.append(DenseTensor(c_shape, data=c_data))
+
         return TTTensor(cores)
 
     # ────────────────────────────────────────────
@@ -97,13 +117,25 @@ class TTTensor:
         Args:
             indices: кортеж/список длины d
         """
-        import numpy as np
-        v = np.ones((1, 1))
-        for k, idx in enumerate(indices):
+        if len(indices) != self.order:
+            raise IndexError("Количество индексов не совпадает с порядком тензора Train")
+
+        curr_vec = [1.0]
+
+        for k in range(self.order):
             core = self.cores[k]
-            slice_matrix = core.get_slice_along_mode_1(idx)
-            v = v @ slice_matrix
-        return float(v[0, 0])
+            i_k = indices[k]
+            r_left, _, r_right = core.shape
+
+            next_vec = [0.0] * r_right
+            for j in range(r_right):
+                s = 0.0
+                for i in range(r_left):
+                    s += curr_vec[i] * core[i, i_k, j]
+                next_vec[j] = s
+            curr_vec = next_vec
+
+        return curr_vec[0]
 
     # ────────────────────────────────────────────
     # Восстановление полного тензора
@@ -111,24 +143,15 @@ class TTTensor:
 
     def full(self) -> DenseTensor:
         """Возвращает полный DenseTensor из его TT-формата."""
-        import numpy as np
-        res_shape = self.shape
-        total = compute_size(res_shape)
-        flat_data = []
-        strides = []
-        current = 1
-        for dim in reversed(res_shape):
-            strides.insert(0, current)
-            current *= dim
+        full_size = compute_size(self.shape)
+        full_data = [0.0] * full_size
 
-        for i in range(total):
-            rem = i
-            idx = []
-            for dim in reversed(res_shape):
-                idx.insert(0, rem % dim)
-                rem //= dim
-            flat_data.append(self.get_element(idx))
-        return DenseTensor(flat_data, res_shape)
+        from core.utils import flat_to_multi_index
+        for flat_idx in range(full_size):
+            multi_idx = flat_to_multi_index(flat_idx, self.shape)
+            full_data[flat_idx] = self.get_element(multi_idx)
+
+        return DenseTensor(self.shape, data=full_data)
 
     # ────────────────────────────────────────────
     # Информация и отладка
@@ -136,25 +159,26 @@ class TTTensor:
 
     def core_sizes(self) -> list[tuple[int, ...]]:
         """Возвращает размеры всех ядер."""
-        return [core.shape for core in self.cores]
+        return [c.shape for c in self.cores]
 
     def total_storage(self) -> int:
         """
         Возвращает общее число элементов во всех ядрах.
         Это то, сколько памяти реально занимает TT-тензор.
         """
-        return sum(compute_size(core.shape) for core in self.cores)
+        return sum(c.size for c in self.cores)
 
     def compression_ratio(self) -> float:
         """
         Возвращает отношение числа элементов полного тензора к числу
         элементов TT-тензора. Показывает, насколько TT-формат компактнее.
         """
-        return float(compute_size(self.shape) / self.total_storage())
+        full_elements = compute_size(self.shape)
+        return full_elements / self.total_storage()
 
     def copy(self) -> TTTensor:
         """Возвращает глубокую копию TT-тензора."""
-        return TTTensor([core.copy() for core in self.cores])
+        return TTTensor(self.cores)
 
     def __repr__(self) -> str:
         """

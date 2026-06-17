@@ -26,32 +26,36 @@ def tt_svd(
         max_rank: максимальный TT-ранг (None = без ограничения)
         eps:      относительная точность усечения
     """
+    d = tensor.ndim
     shape = tensor.shape
-    d = len(shape)
-    norm = backend.norm(tensor)
-    delta = eps * norm / math.sqrt(d - 1) if d > 1 else eps * norm
 
+    norm_full = backend.norm(tensor)
+    delta = (eps / math.sqrt(d - 1)) * norm_full if d > 1 else eps
+
+    curr_matrix = backend.copy(tensor)
+    r_prev = 1
     cores = []
-    r_current = 1
-    matrix = backend.reshape(tensor, (shape[0], -1))
 
     for k in range(d - 1):
         n_k = shape[k]
-        U, S, V = backend.svd(matrix)
+        curr_matrix = curr_matrix.reshape((r_prev * n_k, curr_matrix.size // (r_prev * n_k)))
 
-        r_new = _compute_truncated_rank(S, delta, max_rank)
+        U, S, Vt = backend.svd(curr_matrix, full_matrices=False)
 
-        U_trunc = _truncate_columns(U, r_new, backend)
-        S_trunc = _truncate_vector(S, r_new, backend)
-        V_trunc = _truncate_rows(V, r_new, backend)
+        r_k = _compute_truncated_rank(S, delta, max_rank)
 
-        cores.append(backend.reshape(U_trunc, (r_current, n_k, r_new)))
+        U_trunc = _truncate_columns(U, r_k, backend)
+        S_trunc = _truncate_vector(S, r_k, backend)
+        Vt_trunc = _truncate_rows(Vt, r_k, backend)
 
-        matrix = _multiply_diag_matrix(S_trunc, V_trunc, r_new, backend)
-        r_current = r_new
-        matrix = backend.reshape(matrix, (r_current * shape[k + 1], -1))
+        cores.append(U_trunc.reshape((r_prev, n_k, r_k)))
 
-    cores.append(backend.reshape(matrix, (r_current, shape[-1], 1)))
+        curr_matrix = _multiply_diag_matrix(S_trunc, Vt_trunc, r_k, backend)
+        r_prev = r_k
+
+    last_n = shape[-1]
+    cores.append(curr_matrix.reshape((r_prev, last_n, 1)))
+
     return TTTensor(cores)
 
 
@@ -72,20 +76,27 @@ def _compute_truncated_rank(
         delta:    порог усечения
         max_rank: максимальный ранг (None = без ограничения)
     """
-    total_elements = len(S.data)
-    current_sum = 0.0
-    rank = total_elements
-    for i in range(total_elements - 1, -1, -1):
-        val = S.data[i]
-        if current_sum + val * val <= delta * delta:
-            current_sum += val * val
-            rank = i
+    k = S.size
+    total_sq = sum(x * x for x in S.data)
+
+    running_sum = 0.0
+    chosen_rank = k
+
+    for r in range(k - 1, -1, -1):
+        val = S.data[r]
+        if running_sum + val * val <= delta * delta:
+            running_sum += val * val
+            chosen_rank = r
         else:
             break
 
+    if chosen_rank == 0:
+        chosen_rank = 1
+
     if max_rank is not None:
-        rank = min(rank, max_rank)
-    return max(1, rank)
+        chosen_rank = min(chosen_rank, max_rank)
+
+    return chosen_rank
 
 
 def _truncate_columns(
@@ -104,7 +115,13 @@ def _truncate_columns(
         rank:    число сохраняемых столбцов
         backend: интерфейс backend
     """
-    return backend.slice_columns(matrix, 0, rank)
+    m, n = matrix.shape
+    r = min(rank, n)
+    trunc_data = [0.0] * (m * r)
+    for i in range(m):
+        for j in range(r):
+            trunc_data[i * r + j] = matrix.data[i * n + j]
+    return DenseTensor((m, r), data=trunc_data)
 
 
 def _truncate_rows(
@@ -120,7 +137,10 @@ def _truncate_rows(
         rank:    число сохраняемых строк
         backend: интерфейс backend
     """
-    return backend.slice_rows(matrix, 0, rank)
+    k, n = matrix.shape
+    r = min(rank, k)
+    trunc_data = matrix.data[:r * n]
+    return DenseTensor((r, n), data=trunc_data)
 
 
 def _truncate_vector(
@@ -136,7 +156,8 @@ def _truncate_vector(
         rank:    число сохраняемых элементов
         backend: интерфейс backend
     """
-    return backend.slice_vector(vector, 0, rank)
+    r = min(rank, vector.size)
+    return DenseTensor((r,), data=vector.data[:r])
 
 
 def _multiply_diag_matrix(
@@ -155,4 +176,10 @@ def _multiply_diag_matrix(
         rank:     число строк матрицы и длина диагонального вектора
         backend:  интерфейс backend
     """
-    return backend.diag_multiply_left(diag_vec, matrix)
+    r, n = matrix.shape
+    res_data = [0.0] * (r * n)
+    for i in range(r):
+        d_val = diag_vec.data[i]
+        for j in range(n):
+            res_data[i * n + j] = d_val * matrix.data[i * n + j]
+    return DenseTensor((r, n), data=res_data)

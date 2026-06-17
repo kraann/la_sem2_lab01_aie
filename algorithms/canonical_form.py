@@ -18,21 +18,27 @@ def left_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
         tt:      исходный тензор
         backend: интерфейс backend
     """
-    new_cores = [core.copy() for core in tt.cores]
-    d = len(new_cores)
+    d = tt.order
+    cores = [backend.copy(c) for c in tt.cores]
+
     for k in range(d - 1):
-        core = new_cores[k]
+        core = cores[k]
         r_left, n_k, r_right = core.shape
-        matrix = backend.reshape(core, (r_left * n_k, r_right))
-        Q, R = backend.qr(matrix)
+
+        matrix_2d = core.reshape((r_left * n_k, r_right))
+        Q, R = backend.qr(matrix_2d)
+
         r_new = Q.shape[1]
-        new_cores[k] = backend.reshape(Q, (r_left, n_k, r_new))
-        next_core = new_cores[k + 1]
-        r_next_left, n_next, r_next_right = next_core.shape
-        next_matrix = backend.reshape(next_core, (r_next_left, n_next * r_next_right))
-        next_matrix = backend.matmul(R, next_matrix)
-        new_cores[k + 1] = backend.reshape(next_matrix, (r_new, n_next, r_next_right))
-    return TTTensor(new_cores)
+        cores[k] = Q.reshape((r_left, n_k, r_new))
+
+        next_core = cores[k + 1]
+        rn_left, nn_k, rn_right = next_core.shape
+        next_matrix_2d = next_core.reshape((rn_left, nn_k * rn_right))
+
+        new_next_matrix_2d = backend.matmul(R, next_matrix_2d)
+        cores[k + 1] = new_next_matrix_2d.reshape((r_new, nn_k, rn_right))
+
+    return TTTensor(cores)
 
 
 def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
@@ -43,23 +49,47 @@ def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
         tt:      исходный тензор
         backend: интерфейс backend
     """
-    new_cores = [core.copy() for core in tt.cores]
-    d = len(new_cores)
+    d = tt.order
+    cores = [backend.copy(c) for c in tt.cores]
+
     for k in range(d - 1, 0, -1):
-        core = new_cores[k]
+        core = cores[k]
         r_left, n_k, r_right = core.shape
-        matrix = backend.reshape(core, (r_left, n_k * r_right))
-        Q, R = backend.lq(matrix) if hasattr(backend, 'lq') else backend.qr(backend.transpose(matrix))
-        if not hasattr(backend, 'lq'):
-            Q, R = backend.transpose(R), backend.transpose(Q)
-        r_new = Q.shape[0]
-        new_cores[k] = backend.reshape(Q, (r_new, n_k, r_right))
-        prev_core = new_cores[k - 1]
-        r_prev_left, n_prev, r_prev_right = prev_core.shape
-        prev_matrix = backend.reshape(prev_core, (r_prev_left * n_prev, r_prev_right))
-        prev_matrix = backend.matmul(prev_matrix, R)
-        new_cores[k - 1] = backend.reshape(prev_matrix, (r_prev_left, n_prev, r_new))
-    return TTTensor(new_cores)
+
+        matrix_2d = core.reshape((r_left, n_k * r_right))
+
+        m, n = matrix_2d.shape
+        trans_data = [0.0] * (n * m)
+        for i in range(m):
+            for j in range(n):
+                trans_data[j * m + i] = matrix_2d.data[i * n + j]
+        matrix_trans = DenseTensor((n, m), data=trans_data)
+
+        Q, R = backend.qr(matrix_trans)
+
+        r_new = R.shape[0]
+
+        qt_data = [0.0] * (Q.shape[1] * Q.shape[0])
+        for i in range(Q.shape[0]):
+            for j in range(Q.shape[1]):
+                qt_data[i * Q.shape[0] + j] = Q.data[j * Q.shape[1] + i]
+
+        cores[k] = DenseTensor((r_new, n_k, r_right), data=qt_data)
+
+        prev_core = cores[k - 1]
+        rp_left, np_k, rp_right = prev_core.shape
+        prev_matrix_2d = prev_core.reshape((rp_left * np_k, rp_right))
+
+        rt_data = [0.0] * (R.shape[1] * R.shape[0])
+        for i in range(R.shape[0]):
+            for j in range(R.shape[1]):
+                rt_data[j * R.shape[0] + i] = R.data[i * R.shape[1] + j]
+        R_trans = DenseTensor((R.shape[1], R.shape[0]), data=rt_data)
+
+        new_prev_matrix_2d = backend.matmul(prev_matrix_2d, R_trans)
+        cores[k - 1] = new_prev_matrix_2d.reshape((rp_left, np_k, r_new))
+
+    return TTTensor(cores)
 
 
 # ════════════════════════════════════════════════
@@ -67,9 +97,9 @@ def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
 # ════════════════════════════════════════════════
 
 def _numerical_rank(
-    S: DenseTensor,
-    rel_tol: float = 1e-8,
-    abs_tol: float = 1e-12
+        S: DenseTensor,
+        rel_tol: float = 1e-8,
+        abs_tol: float = 1e-12
 ) -> int:
     """
     Возвращает числовой ранг матрицы по вектору сингулярных значений.
@@ -78,16 +108,19 @@ def _numerical_rank(
         |\sigma_i| > max(abs_tol, rel_tol * max(\sigma_1, ..., \sigma_n))
 
     Args:
-        S:       одномерный тензор формы (k,) — сингулярные значения
-                 в порядке убывания
+        S:        одномерный тензор формы (k,) — сингулярные значения
+                  в порядке убывания
         rel_tol: относительный допуск (по умолчанию 1e-8)
         abs_tol: абсолютный допуск (по умолчанию 1e-12)
     """
-    s_max = S.data[0] if len(S.data) > 0 else 0.0
-    limit = max(abs_tol, rel_tol * s_max)
+    if S.size == 0:
+        return 0
+    max_s = S.data[0]
+    thresh = max(abs_tol, rel_tol * max_s)
+
     rank = 0
     for val in S.data:
-        if abs(val) > limit:
+        if abs(val) > thresh:
             rank += 1
         else:
             break
@@ -95,9 +128,9 @@ def _numerical_rank(
 
 
 def _truncate_columns(
-    matrix: DenseTensor,
-    rank: int,
-    backend: BackendInterface
+        matrix: DenseTensor,
+        rank: int,
+        backend: BackendInterface
 ) -> DenseTensor:
     """
     Возвращает матрицу, составленную из первых rank столбцов исходной матрицы.
@@ -110,13 +143,19 @@ def _truncate_columns(
         rank:    число сохраняемых столбцов
         backend: интерфейс backend
     """
-    return backend.slice_columns(matrix, 0, rank)
+    m, n = matrix.shape
+    r = min(rank, n)
+    trunc_data = [0.0] * (m * r)
+    for i in range(m):
+        for j in range(r):
+            trunc_data[i * r + j] = matrix.data[i * n + j]
+    return DenseTensor((m, r), data=trunc_data)
 
 
 def _truncate_rows(
-    matrix: DenseTensor,
-    rank: int,
-    backend: BackendInterface
+        matrix: DenseTensor,
+        rank: int,
+        backend: BackendInterface
 ) -> DenseTensor:
     """
     Возвращает матрицу, составленную из первых rank строк исходной матрицы.
@@ -126,13 +165,16 @@ def _truncate_rows(
         rank:    число сохраняемых строк
         backend: интерфейс backend
     """
-    return backend.slice_rows(matrix, 0, rank)
+    k, n = matrix.shape
+    r = min(rank, k)
+    trunc_data = matrix.data[:r * n]
+    return DenseTensor((r, n), data=trunc_data)
 
 
 def _truncate_vector(
-    vector: DenseTensor,
-    rank: int,
-    backend: BackendInterface
+        vector: DenseTensor,
+        rank: int,
+        backend: BackendInterface
 ) -> DenseTensor:
     """
     Возвращает вектор, состоящий из первых rank элементов исходного вектора.
@@ -142,14 +184,15 @@ def _truncate_vector(
         rank:    число сохраняемых элементов
         backend: интерфейс backend
     """
-    return backend.slice_vector(vector, 0, rank)
+    r = min(rank, vector.size)
+    return DenseTensor((r,), data=vector.data[:r])
 
 
 def _multiply_diag_matrix(
-    diag_vec: DenseTensor,
-    matrix: DenseTensor,
-    rank: int,
-    backend: BackendInterface
+        diag_vec: DenseTensor,
+        matrix: DenseTensor,
+        rank: int,
+        backend: BackendInterface
 ) -> DenseTensor:
     """
     Возвращает произведение диагональной матрицы на обычную матрицу:
@@ -161,13 +204,19 @@ def _multiply_diag_matrix(
         rank:     длина диагонального вектора
         backend:  интерфейс backend
     """
-    return backend.diag_multiply_left(diag_vec, matrix)
+    r, n = matrix.shape
+    res_data = [0.0] * (r * n)
+    for i in range(r):
+        d_val = diag_vec.data[i]
+        for j in range(n):
+            res_data[i * n + j] = d_val * matrix.data[i * n + j]
+    return DenseTensor((r, n), data=res_data)
 
 
 def _multiply_columns_by_diag(
-    matrix: DenseTensor,
-    diag_vec: DenseTensor,
-    backend: BackendInterface
+        matrix: DenseTensor,
+        diag_vec: DenseTensor,
+        backend: BackendInterface
 ) -> DenseTensor:
     """
     Возвращает результат произведения обычной матрицы на диагональную:
@@ -178,4 +227,9 @@ def _multiply_columns_by_diag(
         diag_vec: одномерный тензор формы (rank,), содержащий диагональные элементы
         backend:  интерфейс backend
     """
-    return backend.diag_multiply_right(matrix, diag_vec)
+    m, n = matrix.shape
+    res_data = [0.0] * (m * n)
+    for i in range(m):
+        for j in range(n):
+            res_data[i * n + j] = matrix.data[i * n + j] * diag_vec.data[j]
+    return DenseTensor((m, n), data=res_data)

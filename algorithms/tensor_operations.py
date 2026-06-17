@@ -3,7 +3,7 @@
 """
 Базовые операции с TT-тензорами.
 
-Все операции работают напрямую с TT-ядерами,
+Все операции работают напрямую с TT-ядрами,
 не восстанавливая полный тензор.
 
 Содержит:
@@ -38,28 +38,47 @@ def tt_add(
         tt1, tt2: TTTensor с одинаковым shape
         backend:  интерфейс backend
     """
+    if tt1.shape != tt2.shape:
+        raise ValueError("Формы TT-тензоров должны совпадать для сложения")
+
     d = tt1.order
     new_cores = []
+
     for k in range(d):
         c1 = tt1.cores[k]
         c2 = tt2.cores[k]
         r1_l, n_k, r1_r = c1.shape
         r2_l, _, r2_r = c2.shape
 
-        r_new_l = r1_l + r2_l if k > 0 else 1
-        r_new_r = r1_r + r2_r if k < d - 1 else 1
+        r_new_l = 1 if k == 0 else (r1_l + r2_l)
+        r_new_r = 1 if k == d - 1 else (r1_r + r2_r)
 
-        new_core = backend.create_zeros((r_new_l, n_k, r_new_r))
-        if k == 0:
-            backend.assign_slice(new_core, c1, (0, 0, 0), (1, n_k, r1_r))
-            backend.assign_slice(new_core, c2, (0, 0, r1_r), (1, n_k, r_new_r))
-        elif k == d - 1:
-            backend.assign_slice(new_core, c1, (0, 0, 0), (r1_l, n_k, 1))
-            backend.assign_slice(new_core, c2, (r1_l, 0, 0), (r_new_l, n_k, 1))
-        else:
-            backend.assign_slice(new_core, c1, (0, 0, 0), (r1_l, n_k, r1_r))
-            backend.assign_slice(new_core, c2, (r1_l, 0, r1_r), (r_new_l, n_k, r_new_r))
+        core_data = [0.0] * (r_new_l * n_k * r_new_r)
+        new_core = DenseTensor((r_new_l, n_k, r_new_r), data=core_data)
+
+        for i_k in range(n_k):
+            for i in range(r_new_l):
+                for j in range(r_new_r):
+                    if k == 0:
+                        if j < r1_r:
+                            val = c1[0, i_k, j]
+                        else:
+                            val = c2[0, i_k, j - r1_r]
+                    elif k == d - 1:
+                        if i < r1_l:
+                            val = c1[i, i_k, 0]
+                        else:
+                            val = c2[i - r1_l, i_k, 0]
+                    else:
+                        if i < r1_l and j < r1_r:
+                            val = c1[i, i_k, j]
+                        elif i >= r1_l and j >= r1_r:
+                            val = c2[i - r1_l, i_k, j - r1_r]
+                        else:
+                            val = 0.0
+                    new_core[i, i_k, j] = val
         new_cores.append(new_core)
+
     return TTTensor(new_cores)
 
 
@@ -77,9 +96,9 @@ def tt_scalar_mul(
         alpha:   число
         backend: интерфейс backend
     """
-    new_cores = [core.copy() for core in tt.cores]
-    new_cores[0] = backend.scale(new_cores[0], alpha)
-    return TTTensor(new_cores)
+    cores = [backend.copy(c) for c in tt.cores]
+    cores[0] = cores[0] * alpha
+    return TTTensor(cores)
 
 
 def tt_hadamard(
@@ -94,20 +113,33 @@ def tt_hadamard(
         tt1, tt2: TTTensor с одинаковым shape
         backend:  интерфейс backend
     """
+    if tt1.shape != tt2.shape:
+        raise ValueError("Формы TT-тензоров должны совпадать для произведения Адамара")
+
     d = tt1.order
     new_cores = []
+
     for k in range(d):
         c1 = tt1.cores[k]
         c2 = tt2.cores[k]
         r1_l, n_k, r1_r = c1.shape
         r2_l, _, r2_r = c2.shape
-        new_core = backend.create_zeros((r1_l * r2_l, n_k, r1_r * r2_r))
-        for i in range(n_k):
-            m1 = backend.slice_along_mode_1(c1, i)
-            m2 = backend.slice_along_mode_1(c2, i)
-            m_kron = backend.kron(m1, m2)
-            backend.assign_slice_along_mode_1(new_core, m_kron, i)
+
+        r_new_l = r1_l * r2_l
+        r_new_r = r1_r * r2_r
+
+        new_core = DenseTensor((r_new_l, n_k, r_new_r))
+
+        for i_k in range(n_k):
+            for i1 in range(r1_l):
+                for i2 in range(r2_l):
+                    i_new = i1 * r2_l + i2
+                    for j1 in range(r1_r):
+                        for j2 in range(r2_r):
+                            j_new = j1 * r2_r + j2
+                            new_core[i_new, i_k, j_new] = c1[i1, i_k, j1] * c2[i2, i_k, j2]
         new_cores.append(new_core)
+
     return TTTensor(new_cores)
 
 
@@ -123,22 +155,31 @@ def tt_dot(
         tt1, tt2: TTTensor с одинаковым shape
         backend:  интерфейс backend
     """
+    if tt1.shape != tt2.shape:
+        raise ValueError("Формы TT-тензоров должны совпадать для вычисления скалярного произведения")
+
     d = tt1.order
-    v = backend.create_ones((1, 1))
+    v = [1.0]
+
     for k in range(d):
         c1 = tt1.cores[k]
         c2 = tt2.cores[k]
         r1_l, n_k, r1_r = c1.shape
         r2_l, _, r2_r = c2.shape
 
-        v_next = backend.create_zeros((r1_r, r2_r))
-        for i in range(n_k):
-            m1 = backend.slice_along_mode_1(c1, i)
-            m2 = backend.slice_along_mode_1(c2, i)
-            temp = backend.matmul(v, m2)
-            v_next = backend.add(v_next, backend.matmul(backend.transpose(m1), temp))
+        v_next = [0.0] * (r1_r * r2_r)
+
+        for i_k in range(n_k):
+            for j1 in range(r1_r):
+                for j2 in range(r2_r):
+                    s = 0.0
+                    for i1 in range(r1_l):
+                        for i2 in range(r2_l):
+                            s += v[i1 * r2_l + i2] * c1[i1, i_k, j1] * c2[i2, i_k, j2]
+                    v_next[j1 * r2_r + j2] += s
         v = v_next
-    return backend.to_scalar(v)
+
+    return v[0]
 
 
 def tt_norm(
@@ -153,7 +194,7 @@ def tt_norm(
         backend: интерфейс backend
     """
     val = tt_dot(tt, tt, backend)
-    return math.sqrt(max(0.0, float(val)))
+    return math.sqrt(max(0.0, val))
 
 
 def tt_diff_norm(
@@ -169,7 +210,7 @@ def tt_diff_norm(
         tt1, tt2: TTTensor
         backend:  интерфейс backend
     """
-    n1 = tt_dot(tt1, tt1, backend)
-    n2 = tt_dot(tt2, tt2, backend)
-    n12 = tt_dot(tt1, tt2, backend)
-    return math.sqrt(max(0.0, float(n1 + n2 - 2 * n12)))
+    norm_a_sq = tt_dot(tt1, tt1, backend)
+    norm_b_sq = tt_dot(tt2, tt2, backend)
+    dot_ab = tt_dot(tt1, tt2, backend)
+    return math.sqrt(max(0.0, norm_a_sq + norm_b_sq - 2.0 * dot_ab))
