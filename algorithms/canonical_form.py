@@ -52,39 +52,26 @@ def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
     for k in range(d - 1, 0, -1):
         rk, nk, rk1 = new_cores[k].shape
 
-        matrix_data = [0.0] * (nk * rk1 * rk)
-        orig_data = new_cores[k].data
-        for i in range(rk):
-            for j in range(nk):
-                for m in range(rk1):
-                    matrix_data[(j * rk1 + m) * rk + i] = orig_data[(i * nk + j) * rk1 + m]
+        matrix = new_cores[k].reshape((rk, nk * rk1))
+        U, S, Vt = backend.svd(matrix, full_matrices=False)
 
-        matrix = DenseTensor((nk * rk1, rk), data=matrix_data)
-        Q, R = backend.qr(matrix)
+        new_cores[k] = Vt.reshape((Vt.shape[0], nk, rk1))
 
-        q_rk = Q.shape[1]
-        q_data = [0.0] * (q_rk * nk * rk1)
-        for j in range(nk):
-            for m in range(rk1):
-                for i in range(q_rk):
-                    q_data[(i * nk + j) * rk1 + m] = Q.data[(j * rk1 + m) * q_rk + i]
+        u_rows, u_cols = U.shape
+        u_data = U.data.copy()
+        s_data = S.data
+        for i in range(u_rows):
+            for j in range(u_cols):
+                u_data[i * u_cols + j] *= s_data[j]
 
-        new_cores[k] = DenseTensor((q_rk, nk, rk1), data=q_data)
+        L = DenseTensor((u_rows, u_cols), data=u_data)
 
         prev_core = new_cores[k - 1]
         pr_rk, pr_nk, pr_rk1 = prev_core.shape
         prev_matrix = prev_core.reshape((pr_rk * pr_nk, pr_rk1))
 
-        r_rows = R.shape[0]
-        r_cols = R.shape[1]
-        r_transposed_data = [0.0] * (r_cols * r_rows)
-        for i in range(r_rows):
-            for j in range(r_cols):
-                r_transposed_data[j * r_rows + i] = R.data[i * r_cols + j]
-        R_T = DenseTensor((r_cols, r_rows), data=r_transposed_data)
-
-        updated_matrix = backend.matmul(prev_matrix, R_T)
-        new_cores[k - 1] = updated_matrix.reshape((pr_rk, pr_nk, r_rows))
+        updated_matrix = backend.matmul(prev_matrix, L)
+        new_cores[k - 1] = updated_matrix.reshape((pr_rk, pr_nk, L.shape[1]))
 
     return TTTensor(new_cores)
 

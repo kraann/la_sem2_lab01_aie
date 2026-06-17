@@ -96,7 +96,8 @@ class DenseTensor:
         if seed is not None:
             random.seed(seed)
 
-        size = compute_size(validate_shape(shape))
+        shape_tup = validate_shape(shape)
+        size = compute_size(shape_tup)
         data = []
         for _ in range(size):
             if integer:
@@ -105,7 +106,7 @@ class DenseTensor:
                 val = random.uniform(low, high)
             data.append(val)
 
-        return cls(shape, data=data)
+        return cls(shape_tup, data=data)
 
     @classmethod
     def from_nested_list(cls, nested_list: list) -> DenseTensor:
@@ -257,6 +258,9 @@ class DenseTensor:
             matrix_data[r * num_cols + c] = self.data[flat_idx]
 
         return DenseTensor((n_mode, num_cols), data=matrix_data)
+
+    def unfolding(self, mode: int) -> DenseTensor:
+        return self.unfold(mode)
 
     # ────────────────────────────────────────────
     # Математические операции
