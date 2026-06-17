@@ -74,6 +74,11 @@ class TTTensor:
             if shape[1] != self.shape[i]:
                 raise ValueError(f"Несоответствие размеров мод: {shape[1]} != {self.shape[i]}")
 
+    @property
+    def dimension(self) -> int:
+        """Возвращает порядок тензора (число мод)."""
+        return self.order
+
     @staticmethod
     def random(shape, ranks, seed=None):
         """

@@ -33,7 +33,7 @@ def tt_svd(
         return TTTensor([core])
 
     norm = 0.0
-    for val in tensor.data.flatten():
+    for val in tensor.data:
         norm += val * val
     norm = math.sqrt(norm)
 
@@ -104,14 +104,14 @@ def _compute_truncated_rank(
         raise ValueError("S должен быть вектором")
 
     if S.shape[0] == 0:
-        return 0
+        return 1
 
     total_sq = 0.0
     for val in S.data:
         total_sq += val * val
 
     if total_sq == 0.0:
-        return 0
+        return 1
 
     if delta == 0.0:
         rank = S.shape[0]
@@ -127,6 +127,9 @@ def _compute_truncated_rank(
 
     if max_rank is not None and rank > max_rank:
         rank = max_rank
+
+    if rank < 1:
+        rank = 1
 
     return rank
 
@@ -152,15 +155,8 @@ def _truncate_columns(
 
     rows, cols = matrix.shape
 
-    if rank < 0:
-        raise ValueError("rank не может быть отрицательным")
-    if rank > cols:
-        raise ValueError(f"rank ({rank}) не может превышать число столбцов ({cols})")
-
-    if rank == 0:
-        return backend.zeros((rows, 0))
-    if rank == cols:
-        return backend.copy(matrix)
+    if rank < 1 or rank > cols:
+        raise ValueError("неверный rank")
 
     result = backend.zeros((rows, rank))
     for i in range(rows):
@@ -187,15 +183,8 @@ def _truncate_rows(
 
     rows, cols = matrix.shape
 
-    if rank < 0:
-        raise ValueError("rank не может быть отрицательным")
-    if rank > rows:
-        raise ValueError(f"rank ({rank}) не может превышать число строк ({rows})")
-
-    if rank == 0:
-        return backend.zeros((0, cols))
-    if rank == rows:
-        return backend.copy(matrix)
+    if rank < 1 or rank > rows:
+        raise ValueError("неверный rank")
 
     result = backend.zeros((rank, cols))
     for i in range(rank):
@@ -222,15 +211,8 @@ def _truncate_vector(
 
     size = vector.shape[0]
 
-    if rank < 0:
-        raise ValueError("rank не может быть отрицательным")
-    if rank > size:
-        raise ValueError(f"rank ({rank}) не может превышать размер вектора ({size})")
-
-    if rank == 0:
-        return backend.zeros((0,))
-    if rank == size:
-        return backend.copy(vector)
+    if rank < 1 or rank > size:
+        raise ValueError("неверный rank")
 
     result = backend.zeros((rank,))
     for i in range(rank):
