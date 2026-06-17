@@ -51,6 +51,8 @@ class DenseTensor:
         """
         if isinstance(shape, int):
             shape = (shape,)
+        else:
+            shape = tuple(shape)
         self.shape = validate_shape(shape)
         self.ndim = len(self.shape)
         self.size = compute_size(self.shape)
@@ -68,14 +70,14 @@ class DenseTensor:
         """Создаёт тензор заданной формы, заполненный нулями."""
         if isinstance(shape, int):
             shape = (shape,)
-        return cls(shape, fill=0.0)
+        return cls(tuple(shape), fill=0.0)
 
     @classmethod
     def ones(cls, shape: tuple[int, ...] | list[int] | int) -> DenseTensor:
         """Создаёт тензор заданной формы, заполненный единицами."""
         if isinstance(shape, int):
             shape = (shape,)
-        return cls(shape, fill=1.0)
+        return cls(tuple(shape), fill=1.0)
 
     @classmethod
     def random(
@@ -104,7 +106,7 @@ class DenseTensor:
 
         if isinstance(shape, int):
             shape = (shape,)
-        shape_tup = validate_shape(shape)
+        shape_tup = validate_shape(tuple(shape))
         size = compute_size(shape_tup)
         data = []
         for _ in range(size):
@@ -121,7 +123,7 @@ class DenseTensor:
         """
         Создаёт тензор из вложенного списка Python.
 
-        Форма тензора определяется автоматически по структуре вложенного списка.
+        Форма тензора определяется автоматически по структуру вложенного списка.
         Предполагается, что структура регулярная (все списки на одном уровне
         имеют одинаковую длину).
 
@@ -225,7 +227,7 @@ class DenseTensor:
         """
         if isinstance(new_shape, int):
             new_shape = (new_shape,)
-        validated = validate_shape(new_shape)
+        validated = validate_shape(tuple(new_shape))
         if compute_size(validated) != self.size:
             raise ValueError("Новая форма имеет другой размер")
         return DenseTensor(validated, data=self.data.copy())
@@ -256,14 +258,15 @@ class DenseTensor:
         num_cols = self.size // n_mode
         matrix_data = [0.0] * self.size
 
+        c_shape = tuple(self.shape[i] for i in range(self.ndim) if i != mode)
+        c_strides = compute_strides(c_shape)
+
         for flat_idx in range(self.size):
             multi_idx = flat_to_multi_index(flat_idx, self.shape)
             r = multi_idx[mode]
 
-            c_indices = [multi_idx[i] for i in range(self.ndim) if i != mode]
-            c_shape = [self.shape[i] for i in range(self.ndim) if i != mode]
-            c_strides = compute_strides(tuple(c_shape))
-            c = multi_index_to_flat(tuple(c_indices), c_strides)
+            c_indices = tuple(multi_idx[i] for i in range(self.ndim) if i != mode)
+            c = multi_index_to_flat(c_indices, c_strides)
 
             matrix_data[r * num_cols + c] = self.data[flat_idx]
 

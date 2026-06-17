@@ -54,36 +54,52 @@ def right_canonicalize(tt: TTTensor, backend: BackendInterface) -> TTTensor:
 
         matrix = new_cores[k].reshape((rk, nk * rk1))
 
-        matrix_t_data = [0.0] * (rk * nk * rk1)
-        for i in range(rk):
-            for j in range(nk * rk1):
-                matrix_t_data[j * rk + i] = matrix.data[i * nk * rk1 + j]
+        m_rows = rk
+        m_cols = nk * rk1
 
-        matrix_t = DenseTensor((nk * rk1, rk), data=matrix_t_data)
-        Q, R = backend.qr(matrix_t)
+        if m_rows <= m_cols:
+            matrix_t_data = [0.0] * (rk * nk * rk1)
+            for i in range(rk):
+                for j in range(nk * rk1):
+                    matrix_t_data[j * rk + i] = matrix.data[i * nk * rk1 + j]
 
-        q_cols = Q.shape[1]
-        q_t_data = [0.0] * (q_cols * nk * rk1)
-        for i in range(nk * rk1):
-            for j in range(q_cols):
-                q_t_data[j * nk * rk1 + i] = Q.data[i * q_cols + j]
+            matrix_t = DenseTensor((nk * rk1, rk), data=matrix_t_data)
+            Q, R = backend.qr(matrix_t)
 
-        new_cores[k] = DenseTensor((q_cols, nk, rk1), data=q_t_data)
+            q_cols = Q.shape[1]
+            q_t_data = [0.0] * (q_cols * nk * rk1)
+            for i in range(nk * rk1):
+                for j in range(q_cols):
+                    q_t_data[j * nk * rk1 + i] = Q.data[i * q_cols + j]
+
+            new_cores[k] = DenseTensor((q_cols, nk, rk1), data=q_t_data)
+
+            r_rows = R.shape[0]
+            r_cols = R.shape[1]
+            r_t_data = [0.0] * (r_cols * r_rows)
+            for i in range(r_rows):
+                for j in range(r_cols):
+                    r_t_data[j * r_rows + i] = R.data[i * r_cols + j]
+            R_T = DenseTensor((r_cols, r_rows), data=r_t_data)
+            L = R_T
+        else:
+            U, S, Vt = backend.svd(matrix, full_matrices=False)
+            new_cores[k] = Vt.reshape((Vt.shape[0], nk, rk1))
+
+            u_rows, u_cols = U.shape
+            u_data = U.data.copy()
+            s_data = S.data
+            for i in range(u_rows):
+                for j in range(u_cols):
+                    u_data[i * u_cols + j] *= s_data[j]
+            L = DenseTensor((u_rows, u_cols), data=u_data)
 
         prev_core = new_cores[k - 1]
         pr_rk, pr_nk, pr_rk1 = prev_core.shape
         prev_matrix = prev_core.reshape((pr_rk * pr_nk, pr_rk1))
 
-        r_rows = R.shape[0]
-        r_cols = R.shape[1]
-        r_t_data = [0.0] * (r_cols * r_rows)
-        for i in range(r_rows):
-            for j in range(r_cols):
-                r_t_data[j * r_rows + i] = R.data[i * r_cols + j]
-        R_T = DenseTensor((r_cols, r_rows), data=r_t_data)
-
-        updated_matrix = backend.matmul(prev_matrix, R_T)
-        new_cores[k - 1] = updated_matrix.reshape((pr_rk, pr_nk, R_T.shape[1]))
+        updated_matrix = backend.matmul(prev_matrix, L)
+        new_cores[k - 1] = updated_matrix.reshape((pr_rk, pr_nk, L.shape[1]))
 
     return TTTensor(new_cores)
 
