@@ -3,7 +3,7 @@
 """
 Базовые операции с TT-тензорами.
 
-Все операции работают напрямую с TT-ядрами,
+Все операции работают напрямую с TT-ядерами,
 не восстанавливая полный тензор.
 
 Содержит:
@@ -38,76 +38,28 @@ def tt_add(
         tt1, tt2: TTTensor с одинаковым shape
         backend:  интерфейс backend
     """
-    if tt1.shape != tt2.shape:
-        raise ValueError("TT-тензоры должны иметь одинаковую форму")
-
-    d = tt1.dimension
-    cores1 = tt1.cores
-    cores2 = tt2.cores
-
+    d = tt1.order
     new_cores = []
-
     for k in range(d):
+        c1 = tt1.cores[k]
+        c2 = tt2.cores[k]
+        r1_l, n_k, r1_r = c1.shape
+        r2_l, _, r2_r = c2.shape
+
+        r_new_l = r1_l + r2_l if k > 0 else 1
+        r_new_r = r1_r + r2_r if k < d - 1 else 1
+
+        new_core = backend.create_zeros((r_new_l, n_k, r_new_r))
         if k == 0:
-            core1 = cores1[k]
-            core2 = cores2[k]
-            r0_1, n1, r1_1 = core1.shape
-            r0_2, n2, r1_2 = core2.shape
-
-            new_core = backend.zeros((r0_1 + r0_2, n1, r1_1 + r1_2))
-
-            for i in range(r0_1):
-                for j in range(n1):
-                    for l in range(r1_1):
-                        new_core[i, j, l] = core1[i, j, l]
-
-            for i in range(r0_2):
-                for j in range(n2):
-                    for l in range(r1_2):
-                        new_core[r0_1 + i, j, r1_1 + l] = core2[i, j, l]
-
-            new_cores.append(new_core)
-
+            backend.assign_slice(new_core, c1, (0, 0, 0), (1, n_k, r1_r))
+            backend.assign_slice(new_core, c2, (0, 0, r1_r), (1, n_k, r_new_r))
         elif k == d - 1:
-            core1 = cores1[k]
-            core2 = cores2[k]
-            r_prev1, n1, r_d1 = core1.shape
-            r_prev2, n2, r_d2 = core2.shape
-
-            new_core = backend.zeros((r_prev1 + r_prev2, n1, r_d1 + r_d2))
-
-            for i in range(r_prev1):
-                for j in range(n1):
-                    for l in range(r_d1):
-                        new_core[i, j, l] = core1[i, j, l]
-
-            for i in range(r_prev2):
-                for j in range(n2):
-                    for l in range(r_d2):
-                        new_core[r_prev1 + i, j, r_d1 + l] = core2[i, j, l]
-
-            new_cores.append(new_core)
-
+            backend.assign_slice(new_core, c1, (0, 0, 0), (r1_l, n_k, 1))
+            backend.assign_slice(new_core, c2, (r1_l, 0, 0), (r_new_l, n_k, 1))
         else:
-            core1 = cores1[k]
-            core2 = cores2[k]
-            r_prev1, n1, r1_1 = core1.shape
-            r_prev2, n2, r1_2 = core2.shape
-
-            new_core = backend.zeros((r_prev1 + r_prev2, n1, r1_1 + r1_2))
-
-            for i in range(r_prev1):
-                for j in range(n1):
-                    for l in range(r1_1):
-                        new_core[i, j, l] = core1[i, j, l]
-
-            for i in range(r_prev2):
-                for j in range(n2):
-                    for l in range(r1_2):
-                        new_core[r_prev1 + i, j, r1_1 + l] = core2[i, j, l]
-
-            new_cores.append(new_core)
-
+            backend.assign_slice(new_core, c1, (0, 0, 0), (r1_l, n_k, r1_r))
+            backend.assign_slice(new_core, c2, (r1_l, 0, r1_r), (r_new_l, n_k, r_new_r))
+        new_cores.append(new_core)
     return TTTensor(new_cores)
 
 
@@ -125,23 +77,9 @@ def tt_scalar_mul(
         alpha:   число
         backend: интерфейс backend
     """
-    cores = [backend.copy(core) for core in tt.cores]
-
-    if tt.dimension == 0:
-        return TTTensor(cores)
-
-    core0 = cores[0]
-    r0, n1, r1 = core0.shape
-
-    new_core0 = backend.zeros((r0, n1, r1))
-    for i in range(r0):
-        for j in range(n1):
-            for k in range(r1):
-                new_core0[i, j, k] = alpha * core0[i, j, k]
-
-    cores[0] = new_core0
-
-    return TTTensor(cores)
+    new_cores = [core.copy() for core in tt.cores]
+    new_cores[0] = backend.scale(new_cores[0], alpha)
+    return TTTensor(new_cores)
 
 
 def tt_hadamard(
@@ -156,33 +94,20 @@ def tt_hadamard(
         tt1, tt2: TTTensor с одинаковым shape
         backend:  интерфейс backend
     """
-    if tt1.shape != tt2.shape:
-        raise ValueError("TT-тензоры должны иметь одинаковую форму")
-
-    d = tt1.dimension
-    cores1 = tt1.cores
-    cores2 = tt2.cores
-
+    d = tt1.order
     new_cores = []
-
     for k in range(d):
-        core1 = cores1[k]
-        core2 = cores2[k]
-
-        r_prev1, n1, r1_1 = core1.shape
-        r_prev2, n2, r1_2 = core2.shape
-
-        new_core = backend.zeros((r_prev1 * r_prev2, n1, r1_1 * r1_2))
-
-        for i1 in range(r_prev1):
-            for i2 in range(r_prev2):
-                for j in range(n1):
-                    for l1 in range(r1_1):
-                        for l2 in range(r1_2):
-                            new_core[i1 * r_prev2 + i2, j, l1 * r1_2 + l2] = core1[i1, j, l1] * core2[i2, j, l2]
-
+        c1 = tt1.cores[k]
+        c2 = tt2.cores[k]
+        r1_l, n_k, r1_r = c1.shape
+        r2_l, _, r2_r = c2.shape
+        new_core = backend.create_zeros((r1_l * r2_l, n_k, r1_r * r2_r))
+        for i in range(n_k):
+            m1 = backend.slice_along_mode_1(c1, i)
+            m2 = backend.slice_along_mode_1(c2, i)
+            m_kron = backend.kron(m1, m2)
+            backend.assign_slice_along_mode_1(new_core, m_kron, i)
         new_cores.append(new_core)
-
     return TTTensor(new_cores)
 
 
@@ -198,48 +123,22 @@ def tt_dot(
         tt1, tt2: TTTensor с одинаковым shape
         backend:  интерфейс backend
     """
-    if tt1.shape != tt2.shape:
-        raise ValueError("TT-тензоры должны иметь одинаковую форму")
+    d = tt1.order
+    v = backend.create_ones((1, 1))
+    for k in range(d):
+        c1 = tt1.cores[k]
+        c2 = tt2.cores[k]
+        r1_l, n_k, r1_r = c1.shape
+        r2_l, _, r2_r = c2.shape
 
-    d = tt1.dimension
-    cores1 = tt1.cores
-    cores2 = tt2.cores
-
-    core1 = cores1[0]
-    core2 = cores2[0]
-    r0_1, n1, r1_1 = core1.shape
-    r0_2, n1, r1_2 = core2.shape
-
-    Z = backend.zeros((r1_1, r1_2))
-
-    for i in range(n1):
-        for a in range(r1_1):
-            for b in range(r1_2):
-                value = 0.0
-                for c in range(r0_1):
-                    value += core1[c, i, a] * core2[c, i, b]
-                Z[a, b] += value
-
-    for k in range(1, d):
-        core1 = cores1[k]
-        core2 = cores2[k]
-        r_prev1, n1, r1_1 = core1.shape
-        r_prev2, n1, r1_2 = core2.shape
-
-        new_Z = backend.zeros((r1_1, r1_2))
-
-        for i in range(n1):
-            for a in range(r1_1):
-                for b in range(r1_2):
-                    value = 0.0
-                    for c in range(r_prev1):
-                        for d_idx in range(r_prev2):
-                            value += core1[c, i, a] * Z[c, d_idx] * core2[d_idx, i, b]
-                    new_Z[a, b] += value
-
-        Z = new_Z
-
-    return Z[0, 0]
+        v_next = backend.create_zeros((r1_r, r2_r))
+        for i in range(n_k):
+            m1 = backend.slice_along_mode_1(c1, i)
+            m2 = backend.slice_along_mode_1(c2, i)
+            temp = backend.matmul(v, m2)
+            v_next = backend.add(v_next, backend.matmul(backend.transpose(m1), temp))
+        v = v_next
+    return backend.to_scalar(v)
 
 
 def tt_norm(
@@ -253,10 +152,8 @@ def tt_norm(
         tt:      TTTensor
         backend: интерфейс backend
     """
-    dot_product = tt_dot(tt, tt, backend)
-    if dot_product < 0 and dot_product > -1e-12:
-        dot_product = 0.0
-    return math.sqrt(dot_product)
+    val = tt_dot(tt, tt, backend)
+    return math.sqrt(max(0.0, float(val)))
 
 
 def tt_diff_norm(
@@ -272,16 +169,7 @@ def tt_diff_norm(
         tt1, tt2: TTTensor
         backend:  интерфейс backend
     """
-    if tt1.shape != tt2.shape:
-        raise ValueError("TT-тензоры должны иметь одинаковую форму")
-
-    dot_11 = tt_dot(tt1, tt1, backend)
-    dot_12 = tt_dot(tt1, tt2, backend)
-    dot_22 = tt_dot(tt2, tt2, backend)
-
-    norm_sq = dot_11 - 2 * dot_12 + dot_22
-
-    if norm_sq < 0 and norm_sq > -1e-12:
-        norm_sq = 0.0
-
-    return math.sqrt(norm_sq)
+    n1 = tt_dot(tt1, tt1, backend)
+    n2 = tt_dot(tt2, tt2, backend)
+    n12 = tt_dot(tt1, tt2, backend)
+    return math.sqrt(max(0.0, float(n1 + n2 - 2 * n12)))

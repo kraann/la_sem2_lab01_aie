@@ -27,60 +27,38 @@ def tt_round(
         max_rank: максимальный TT-ранг (None = без ограничения)
         eps:      относительная точность усечения
     """
-    if tt.dimension == 0:
-        return TTTensor([backend.copy(tt.cores[0])])
+    tt_right = right_canonicalize(tt, backend)
+    new_cores = [core.copy() for core in tt_right.cores]
+    d = tt_right.order
 
-    cores = [backend.copy(core) for core in tt.cores]
+    norm_sq = 0.0
+    for val in tt_right.cores[0].data:
+        norm_sq += val * val
+    norm = math.sqrt(norm_sq)
+    delta = eps * norm / math.sqrt(d - 1) if d > 1 else eps * norm
 
-    norm = 0.0
-    for core in cores:
-        for val in core.data.flatten():
-            norm += val * val
-    norm = math.sqrt(norm)
+    for k in range(d - 1):
+        core = new_cores[k]
+        r_left, n_k, r_right = core.shape
+        matrix = backend.reshape(core, (r_left * n_k, r_right))
+        U, S, V = backend.svd(matrix)
 
-    if norm < 1e-30:
-        return TTTensor(cores)
+        r_new = _compute_rank(S, delta, max_rank)
 
-    delta = (eps / math.sqrt(tt.dimension - 1)) * norm if eps > 0 else 0.0
+        U_trunc = _truncate_columns(U, r_new, backend)
+        S_trunc = _truncate_vector(S, r_new, backend)
+        V_trunc = _truncate_rows(V, r_new, backend)
 
-    for k in range(tt.dimension - 1):
-        core = cores[k]
-        left_rank, mode_size, right_rank = core.shape
+        new_cores[k] = backend.reshape(U_trunc, (r_left, n_k, r_new))
 
-        matrix = backend.reshape(core, (left_rank * mode_size, right_rank))
+        M_next = _multiply_diag_matrix(S_trunc, V_trunc, r_new, backend)
+        next_core = new_cores[k + 1]
+        r_next_left, n_next, r_next_right = next_core.shape
+        next_matrix = backend.reshape(next_core, (r_next_left, n_next * r_next_right))
+        next_matrix = backend.matmul(M_next, next_matrix)
+        new_cores[k + 1] = backend.reshape(next_matrix, (r_new, n_next, r_next_right))
 
-        U, S, Vt = backend.svd(matrix, full_matrices=False)
-
-        rank = _compute_rank(S, delta, max_rank)
-
-        if rank == 0:
-            rank = 1
-
-        U_trunc = _truncate_columns(U, rank, backend)
-        S_trunc = _truncate_vector(S, rank, backend)
-        Vt_trunc = _truncate_rows(Vt, rank, backend)
-
-        new_core = backend.reshape(U_trunc, (left_rank, mode_size, rank))
-        cores[k] = new_core
-
-        transfer = _multiply_diag_matrix(S_trunc, Vt_trunc, rank, backend)
-
-        next_core = cores[k + 1]
-        _, next_mode_size, next_right_rank = next_core.shape
-
-        new_next = backend.zeros((rank, next_mode_size, next_right_rank))
-
-        for a in range(rank):
-            for i in range(next_mode_size):
-                for b in range(next_right_rank):
-                    value = 0.0
-                    for c in range(right_rank):
-                        value += transfer[a, c] * next_core[c, i, b]
-                    new_next[a, i, b] = value
-
-        cores[k + 1] = new_next
-
-    return TTTensor(cores)
+    return TTTensor(new_cores)
 
 
 # ════════════════════════════════════════════════
@@ -101,36 +79,24 @@ def _compute_rank(
         delta:    абсолютный порог усечения (0 — без усечения по delta)
         max_rank: максимально допустимый ранг (None = без ограничения)
     """
-    if S.ndim != 1:
-        raise ValueError("S должен быть вектором")
+    cumsum = 0.0
+    total_elements = len(S.data)
+    for val in reversed(S.data):
+        cumsum += val * val
 
-    if S.shape[0] == 0:
-        return 0
+    current_sum = 0.0
+    rank = total_elements
+    for i in range(total_elements - 1, -1, -1):
+        val = S.data[i]
+        if current_sum + val * val <= delta * delta:
+            current_sum += val * val
+            rank = i
+        else:
+            break
 
-    total_sq = 0.0
-    for val in S.data:
-        total_sq += val * val
-
-    if total_sq == 0.0:
-        return 0
-
-    cum_sq = 0.0
-    rank = 0
-
-    if delta == 0.0:
-        rank = S.shape[0]
-    else:
-        delta_sq = delta * delta
-        for val in S.data:
-            cum_sq += val * val
-            rank += 1
-            if total_sq - cum_sq <= delta_sq:
-                break
-
-    if max_rank is not None and rank > max_rank:
-        rank = max_rank
-
-    return rank
+    if max_rank is not None:
+        rank = min(rank, max_rank)
+    return max(1, rank)
 
 
 def _truncate_columns(
@@ -146,26 +112,7 @@ def _truncate_columns(
         rank:    число сохраняемых столбцов
         backend: интерфейс backend
     """
-    if matrix.ndim != 2:
-        raise ValueError("matrix должен быть двумерным")
-
-    rows, cols = matrix.shape
-
-    if rank < 0:
-        raise ValueError("rank не может быть отрицательным")
-    if rank > cols:
-        raise ValueError(f"rank ({rank}) не может превышать число столбцов ({cols})")
-
-    if rank == 0:
-        return backend.zeros((rows, 0))
-    if rank == cols:
-        return backend.copy(matrix)
-
-    result = backend.zeros((rows, rank))
-    for i in range(rows):
-        for j in range(rank):
-            result[i, j] = matrix[i, j]
-    return result
+    return backend.slice_columns(matrix, 0, rank)
 
 
 def _truncate_rows(
@@ -181,26 +128,7 @@ def _truncate_rows(
         rank:    число сохраняемых строк
         backend: интерфейс backend
     """
-    if matrix.ndim != 2:
-        raise ValueError("matrix должен быть двумерным")
-
-    rows, cols = matrix.shape
-
-    if rank < 0:
-        raise ValueError("rank не может быть отрицательным")
-    if rank > rows:
-        raise ValueError(f"rank ({rank}) не может превышать число строк ({rows})")
-
-    if rank == 0:
-        return backend.zeros((0, cols))
-    if rank == rows:
-        return backend.copy(matrix)
-
-    result = backend.zeros((rank, cols))
-    for i in range(rank):
-        for j in range(cols):
-            result[i, j] = matrix[i, j]
-    return result
+    return backend.slice_rows(matrix, 0, rank)
 
 
 def _truncate_vector(
@@ -216,25 +144,7 @@ def _truncate_vector(
         rank:    число сохраняемых элементов
         backend: интерфейс backend
     """
-    if vector.ndim != 1:
-        raise ValueError("vector должен быть одномерным")
-
-    size = vector.shape[0]
-
-    if rank < 0:
-        raise ValueError("rank не может быть отрицательным")
-    if rank > size:
-        raise ValueError(f"rank ({rank}) не может превышать размер вектора ({size})")
-
-    if rank == 0:
-        return backend.zeros((0,))
-    if rank == size:
-        return backend.copy(vector)
-
-    result = backend.zeros((rank,))
-    for i in range(rank):
-        result[i] = vector[i]
-    return result
+    return backend.slice_vector(vector, 0, rank)
 
 
 def _multiply_diag_matrix(
@@ -253,22 +163,4 @@ def _multiply_diag_matrix(
         rank:     число строк матрицы и длина диагонального вектора
         backend:  интерфейс backend
     """
-    if diag_vec.ndim != 1:
-        raise ValueError("diag_vec должен быть одномерным")
-    if matrix.ndim != 2:
-        raise ValueError("matrix должен быть двумерным")
-
-    if diag_vec.shape[0] != rank:
-        raise ValueError(f"diag_vec size ({diag_vec.shape[0]}) != rank ({rank})")
-    if matrix.shape[0] != rank:
-        raise ValueError(f"matrix rows ({matrix.shape[0]}) != rank ({rank})")
-
-    cols = matrix.shape[1]
-    result = backend.zeros((rank, cols))
-
-    for i in range(rank):
-        diag_val = diag_vec[i]
-        for j in range(cols):
-            result[i, j] = diag_val * matrix[i, j]
-
-    return result
+    return backend.diag_multiply_left(diag_vec, matrix)
