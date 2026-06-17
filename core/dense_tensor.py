@@ -50,7 +50,6 @@ class DenseTensor:
             data:  плоский список значений (если None — заполняется fill)
             fill:  значение для заполнения (по умолчанию 0.0)
         """
-        # Приводим к tuple для валидации и хранения, чтобы не зависеть от изменяемых списков
         if isinstance(shape, int):
             shape_tup = (shape,)
         else:
@@ -77,8 +76,10 @@ class DenseTensor:
             shape: кортеж размеров по каждой моде (n_0, n_1, ..., n_{d-1})
         """
         if isinstance(shape, int):
-            shape = (shape,)
-        return DenseTensor(tuple(shape), fill=0.0)
+            norm_shape = (shape,)
+        else:
+            norm_shape = tuple(shape)
+        return DenseTensor(norm_shape, fill=0.0)
 
     @staticmethod
     def ones(shape: tuple[int, ...] | list[int]) -> DenseTensor:
@@ -89,8 +90,10 @@ class DenseTensor:
             shape: кортеж размеров по каждой моде (n_0, n_1, ..., n_{d-1})
         """
         if isinstance(shape, int):
-            shape = (shape,)
-        return DenseTensor(tuple(shape), fill=1.0)
+            norm_shape = (shape,)
+        else:
+            norm_shape = tuple(shape)
+        return DenseTensor(norm_shape, fill=1.0)
 
     @staticmethod
     def random(
@@ -116,11 +119,11 @@ class DenseTensor:
             random.seed(seed)
 
         if isinstance(shape, int):
-            shape = (shape,)
+            norm_shape = (shape,)
         else:
-            shape = tuple(shape)
+            norm_shape = tuple(shape)
 
-        instance = DenseTensor(shape)
+        instance = DenseTensor(norm_shape)
         data = []
         for _ in range(instance.size):
             if integer:
@@ -365,7 +368,7 @@ class DenseTensor:
         Возвращает True, если тензоры равны с заданной точностью.
 
         Условие равенства: shape равны и для каждой пары элементов
-        тензоров с равными индексами выполняется:
+        тензоров с равными indices выполняется:
             |a - b| <= atol + rtol * max(|a|, |b|)
 
 
