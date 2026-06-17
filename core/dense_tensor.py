@@ -50,22 +50,17 @@ class DenseTensor:
             data:  плоский список значений (если None — заполняется fill)
             fill:  значение для заполнения (по умолчанию 0.0)
         """
-        if isinstance(shape, int):
-            shape_tup = (shape,)
-        else:
-            shape_tup = tuple(shape)
-
-        self.shape = validate_shape(shape_tup)
+        self.shape = validate_shape(shape)
         self.ndim = len(self.shape)
         self.size = compute_size(self.shape)
         self.strides = compute_strides(self.shape)
 
-        if data is not None:
+        if data is None:
+            self.data = [fill] * self.size
+        else:
             if len(data) != self.size:
                 raise ValueError("Размер data не соответствует shape")
-            self.data = [float(x) for x in data]
-        else:
-            self.data = [float(fill)] * self.size
+            self.data = list(data)
 
     @staticmethod
     def zeros(shape: tuple[int, ...] | list[int]) -> DenseTensor:
@@ -75,11 +70,7 @@ class DenseTensor:
         Args:
             shape: кортеж размеров по каждой моде (n_0, n_1, ..., n_{d-1})
         """
-        if isinstance(shape, int):
-            norm_shape = (shape,)
-        else:
-            norm_shape = tuple(shape)
-        return DenseTensor(norm_shape, fill=0.0)
+        return DenseTensor(shape, fill=0.0)
 
     @staticmethod
     def ones(shape: tuple[int, ...] | list[int]) -> DenseTensor:
@@ -89,11 +80,7 @@ class DenseTensor:
         Args:
             shape: кортеж размеров по каждой моде (n_0, n_1, ..., n_{d-1})
         """
-        if isinstance(shape, int):
-            norm_shape = (shape,)
-        else:
-            norm_shape = tuple(shape)
-        return DenseTensor(norm_shape, fill=1.0)
+        return DenseTensor(shape, fill=1.0)
 
     @staticmethod
     def random(
@@ -115,25 +102,18 @@ class DenseTensor:
 
         NB: эта функция не тестируется, ее можно использовать для отладки
         """
-        if seed is not None:
-            random.seed(seed)
-
-        if isinstance(shape, int):
-            norm_shape = (shape,)
-        else:
-            norm_shape = tuple(shape)
-
-        instance = DenseTensor(norm_shape)
+        rng = random.Random(seed)
+        checked_shape = validate_shape(shape)
+        size = compute_size(checked_shape)
         data = []
-        for _ in range(instance.size):
-            if integer:
-                val = float(random.randint(low, high - 1))
-            else:
-                val = random.uniform(low, high)
-            data.append(val)
 
-        instance.data = data
-        return instance
+        for _ in range(size):
+            if integer:
+                data.append(float(rng.randint(low, high)))
+            else:
+                data.append(rng.uniform(low, high))
+
+        return DenseTensor(checked_shape, data=data)
 
     @staticmethod
     def from_nested_list(nested: list) -> DenseTensor:
@@ -145,34 +125,31 @@ class DenseTensor:
             nested: список
         """
         if not isinstance(nested, (list, tuple)):
-            return DenseTensor((), data=[float(nested)])
+            raise TypeError("nested должен быть списком")
 
-        if len(nested) == 0:
-            raise ValueError("Пустой список")
+        def find_shape(value):
+            if not isinstance(value, (list, tuple)):
+                return ()
+            if len(value) == 0:
+                raise ValueError("пустые списки не задают тензор")
 
-        shape_list = []
-        curr = nested
-        while isinstance(curr, (list, tuple)):
-            if len(curr) == 0:
-                raise ValueError("Пустой вложенный список")
-            shape_list.append(len(curr))
-            curr = curr[0]
+            first_shape = find_shape(value[0])
+            for item in value:
+                if find_shape(item) != first_shape:
+                    raise ValueError("вложенный список должен быть прямоугольным")
+            return (len(value),) + first_shape
 
+        def add_values(value, result):
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    add_values(item, result)
+            else:
+                result.append(float(value))
+
+        shape = find_shape(nested)
         data = []
-
-        def flatten(lst, depth=0):
-            if depth == len(shape_list):
-                if isinstance(lst, (list, tuple)):
-                    raise ValueError("Нерегулярная структура списка")
-                data.append(float(lst))
-                return
-            if not isinstance(lst, (list, tuple)) or len(lst) != shape_list[depth]:
-                raise ValueError("Нерегулярная структура списка")
-            for item in lst:
-                flatten(item, depth + 1)
-
-        flatten(nested, 0)
-        return DenseTensor(shape_list, data=data)
+        add_values(nested, data)
+        return DenseTensor(shape, data=data)
 
     # ────────────────────────────────────────────
     # Индексация
@@ -188,14 +165,26 @@ class DenseTensor:
         Args:
             multi_index: кортеж индексов (i_0, i_1, ..., i_{d-1}) или целое число
         """
-        if isinstance(multi_index, (int, float)):
-            idx_tuple = (int(multi_index),)
-        else:
-            idx_tuple = tuple(multi_index)
+        if type(multi_index) is int:
+            return flat_to_multi_index(multi_index, self.shape)
 
-        if len(idx_tuple) != self.ndim:
-            raise IndexError("Неверное число индексов")
-        return idx_tuple
+        if isinstance(multi_index, list):
+            multi_index = tuple(multi_index)
+
+        if not isinstance(multi_index, tuple):
+            raise TypeError("индекс должен быть int, tuple или list")
+
+        if len(multi_index) != self.ndim:
+            raise IndexError("неверная длина индекса")
+
+        for i in range(self.ndim):
+            value = multi_index[i]
+            if type(value) is not int:
+                raise IndexError("индексы должны быть целыми числами")
+            if value < 0 or value >= self.shape[i]:
+                raise IndexError("индекс вне границ тензора")
+
+        return multi_index
 
     def __getitem__(self, multi_index: tuple[int, ...] | int) -> float:
         """
@@ -204,11 +193,9 @@ class DenseTensor:
         Args:
             multi_index: кортеж индексов (i_0, i_1, ..., i_{d-1}) или целое число
         """
-        idx_tuple = self._validate_index(multi_index)
-        flat_idx = multi_index_to_flat(idx_tuple, self.strides)
-        if flat_idx < 0 or flat_idx >= self.size:
-            raise IndexError("Индекс вне диапазона")
-        return self.data[flat_idx]
+        index = self._validate_index(multi_index)
+        flat_index = multi_index_to_flat(index, self.strides)
+        return self.data[flat_index]
 
     def __setitem__(
         self,
@@ -222,11 +209,9 @@ class DenseTensor:
             multi_index: кортеж индексов (i_0, i_1, ..., i_{d-1}) или целое число
             value:       новое значение (число)
         """
-        idx_tuple = self._validate_index(multi_index)
-        flat_idx = multi_index_to_flat(idx_tuple, self.strides)
-        if flat_idx < 0 or flat_idx >= self.size:
-            raise IndexError("Индекс вне диапазона")
-        self.data[flat_idx] = float(value)
+        index = self._validate_index(multi_index)
+        flat_index = multi_index_to_flat(index, self.strides)
+        self.data[flat_index] = float(value)
 
     # ────────────────────────────────────────────
     # Преобразования формы
@@ -239,12 +224,10 @@ class DenseTensor:
         Args:
             new_shape: кортеж новых размеров (n'_0, n'_1, ..., n'_{k-1})
         """
-        if isinstance(new_shape, int):
-            new_shape = (new_shape,)
-        validated = validate_shape(tuple(new_shape))
-        if compute_size(validated) != self.size:
-            raise ValueError("Новая форма имеет другой размер")
-        return DenseTensor(validated, data=self.data.copy())
+        checked_shape = validate_shape(new_shape)
+        if compute_size(checked_shape) != self.size:
+            raise ValueError("новая форма должна сохранять число элементов")
+        return DenseTensor(checked_shape, data=self.data.copy())
 
     def unfolding(self, mode: int) -> DenseTensor:
         """
@@ -308,10 +291,6 @@ class DenseTensor:
     # Арифметика
     # ────────────────────────────────────────────
 
-    def norm(self) -> float:
-        """Возвращает Фробениусову норму тензора."""
-        return math.sqrt(sum(x * x for x in self.data))
-
     def __add__(self, other: DenseTensor) -> DenseTensor:
         """
         Возвращает тензор — результат поэлементного сложения: t1 + t2.
@@ -354,6 +333,10 @@ class DenseTensor:
         """Возвращает тензор — результат умножения тензора на -1."""
         return DenseTensor(self.shape, data=[-x for x in self.data])
 
+    def norm(self) -> float:
+        """Возвращает Фробениусову норму тензора."""
+        return math.sqrt(sum(x * x for x in self.data))
+
     # ────────────────────────────────────────────
     # Сравнение и отладка
     # ────────────────────────────────────────────
@@ -368,7 +351,7 @@ class DenseTensor:
         Возвращает True, если тензоры равны с заданной точностью.
 
         Условие равенства: shape равны и для каждой пары элементов
-        тензоров с равными indices выполняется:
+        тензоров с равными индексами выполняется:
             |a - b| <= atol + rtol * max(|a|, |b|)
 
 
@@ -407,3 +390,7 @@ class DenseTensor:
         NB: эта функция не проверяется тестами, ее реализация может быть произвольной
         """
         return f"DenseTensor(shape={self.shape}, size={self.size})"
+
+    def __str__(self) -> str:
+        """Возвращает строковое представление тензора для отладки."""
+        return self.__repr__()
