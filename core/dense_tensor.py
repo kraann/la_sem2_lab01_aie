@@ -37,7 +37,7 @@ class DenseTensor:
 
     def __init__(
             self,
-            shape: tuple[int, ...] | list[int],
+            shape: tuple[int, ...] | list[int] | int,
             data: list[float] | None = None,
             fill: float = 0.0
     ) -> None:
@@ -49,6 +49,8 @@ class DenseTensor:
             data:  плоский список значений (если None — заполняется fill)
             fill:  значение для заполнения (по умолчанию 0.0)
         """
+        if isinstance(shape, int):
+            shape = (shape,)
         self.shape = validate_shape(shape)
         self.ndim = len(self.shape)
         self.size = compute_size(self.shape)
@@ -62,19 +64,23 @@ class DenseTensor:
             self.data = [float(fill)] * self.size
 
     @classmethod
-    def zeros(cls, shape: tuple[int, ...] | list[int]) -> DenseTensor:
+    def zeros(cls, shape: tuple[int, ...] | list[int] | int) -> DenseTensor:
         """Создаёт тензор заданной формы, заполненный нулями."""
+        if isinstance(shape, int):
+            shape = (shape,)
         return cls(shape, fill=0.0)
 
     @classmethod
-    def ones(cls, shape: tuple[int, ...] | list[int]) -> DenseTensor:
+    def ones(cls, shape: tuple[int, ...] | list[int] | int) -> DenseTensor:
         """Создаёт тензор заданной формы, заполненный единицами."""
+        if isinstance(shape, int):
+            shape = (shape,)
         return cls(shape, fill=1.0)
 
     @classmethod
     def random(
             cls,
-            shape: tuple[int, ...] | list[int],
+            shape: tuple[int, ...] | list[int] | int,
             low: int = -5,
             high: int = 5,
             integer: bool = True,
@@ -96,6 +102,8 @@ class DenseTensor:
         if seed is not None:
             random.seed(seed)
 
+        if isinstance(shape, int):
+            shape = (shape,)
         shape_tup = validate_shape(shape)
         size = compute_size(shape_tup)
         data = []
@@ -109,7 +117,7 @@ class DenseTensor:
         return cls(shape_tup, data=data)
 
     @classmethod
-    def from_nested_list(cls, nested_list: list) -> DenseTensor:
+    def from_nested_list(cls, nested_list: list | tuple | float | int) -> DenseTensor:
         """
         Создаёт тензор из вложенного списка Python.
 
@@ -123,7 +131,7 @@ class DenseTensor:
         Raises:
             ValueError: если список пустой или имеет нерегулярную структуру
         """
-        if not isinstance(nested_list, list):
+        if not isinstance(nested_list, (list, tuple)):
             return cls((), data=[float(nested_list)])
 
         if len(nested_list) == 0:
@@ -131,7 +139,7 @@ class DenseTensor:
 
         shape_list = []
         curr = nested_list
-        while isinstance(curr, list):
+        while isinstance(curr, (list, tuple)):
             if len(curr) == 0:
                 raise ValueError("Пустой вложенный список")
             shape_list.append(len(curr))
@@ -141,11 +149,11 @@ class DenseTensor:
 
         def flatten(lst, depth=0):
             if depth == len(shape_list):
-                if isinstance(lst, list):
+                if isinstance(lst, (list, tuple)):
                     raise ValueError("Нерегулярная структура списка")
                 data.append(float(lst))
                 return
-            if not isinstance(lst, list) or len(lst) != shape_list[depth]:
+            if not isinstance(lst, (list, tuple)) or len(lst) != shape_list[depth]:
                 raise ValueError("Нерегулярная структура списка")
             for item in lst:
                 flatten(item, depth + 1)
@@ -206,7 +214,7 @@ class DenseTensor:
     # Изменение формы и копирование
     # ────────────────────────────────────────────
 
-    def reshape(self, new_shape: tuple[int, ...] | list[int]) -> DenseTensor:
+    def reshape(self, new_shape: tuple[int, ...] | list[int] | int) -> DenseTensor:
         """
         Возвращает новый тензор с измененной формой, но теми же данными.
 
@@ -215,6 +223,8 @@ class DenseTensor:
         Args:
             new_shape: новая форма тензора
         """
+        if isinstance(new_shape, int):
+            new_shape = (new_shape,)
         validated = validate_shape(new_shape)
         if compute_size(validated) != self.size:
             raise ValueError("Новая форма имеет другой размер")
@@ -260,6 +270,9 @@ class DenseTensor:
         return DenseTensor((n_mode, num_cols), data=matrix_data)
 
     def unfolding(self, mode: int) -> DenseTensor:
+        return self.unfold(mode)
+
+    def left_unfolding(self, mode: int) -> DenseTensor:
         return self.unfold(mode)
 
     # ────────────────────────────────────────────
